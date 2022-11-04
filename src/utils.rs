@@ -1,4 +1,4 @@
-use crate::base_node::MAX_KEY_LEN;
+use crate::base_node::{Prefix, MAX_KEY_LEN};
 use crate::node_ptr::NodePtr;
 use core::cell::Cell;
 use core::fmt;
@@ -80,13 +80,13 @@ impl Default for Backoff {
 #[derive(Default, Clone)]
 pub(crate) struct KeyTracker {
     len: usize,
-    data: [u8; 8],
+    data: Prefix,
 }
 
 impl KeyTracker {
     #[inline]
     pub(crate) fn push(&mut self, key: u8) {
-        debug_assert!(self.len <= 8);
+        debug_assert!(self.len <= MAX_KEY_LEN);
 
         self.data[self.len] = key;
         self.len += 1;
@@ -103,9 +103,15 @@ impl KeyTracker {
 
     #[inline]
     pub(crate) fn to_usize_key(&self) -> usize {
-        assert!(self.len == 8);
+        assert!(self.len == MAX_KEY_LEN);
         let val = unsafe { *((&self.data) as *const [u8; 8] as *const usize) };
         val.swap_bytes()
+    }
+
+    /// Convert current (prefix) keys to a node id
+    pub(crate) fn to_node_id(&self) -> usize {
+        let val = unsafe { *((&self.data) as *const [u8; 8] as *const usize) };
+        val >> (MAX_KEY_LEN - self.len)
     }
 
     #[inline]

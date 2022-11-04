@@ -16,6 +16,7 @@ crossbeam-epoch = "0.9.11"
 rand = { version = "0.8.5", optional = true }
 serde = { version = "1.0.147", features = ["derive"], optional = true }
 douhua = { git = "https://github.com/XiangpengHao/douhua.git", branch = "numa", features = ["numa"] }
+dashmap = "5.4.0"
 
 [dev-dependencies]
 rand = "0.8.5"
@@ -27,6 +28,7 @@ mimalloc = { version = "0.1.30", default-features = false }
 selfsimilar = "0.1.0"
 static_assertions = "1.1.0"
 shuttle = "0.3.0"
+fxhash = "0.2.1"
 
 [[bench]]
 name = "basic"

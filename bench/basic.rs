@@ -109,7 +109,7 @@ impl DBIndex for Art<usize, usize> {
     }
 }
 
-impl DBIndex for flurry::HashMap<usize, usize> {
+impl DBIndex for flurry::HashMap<usize, usize, fxhash::FxBuildHasher> {
     type Guard<'a> = flurry::Guard<'a>;
 
     fn pin<'a>(&'a self) -> Self::Guard<'a> {
@@ -216,7 +216,7 @@ fn main() {
         match c.index_type {
             IndexType::Flurry => {
                 let mut test_bench = TestBench {
-                    index: flurry::HashMap::new(),
+                    index: flurry::HashMap::with_hasher(fxhash::FxBuildHasher::default()),
                     initial_cnt: 50_000_000,
                 };
                 let result = shumai::run(&mut test_bench, c, repeat);

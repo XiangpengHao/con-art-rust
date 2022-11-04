@@ -1,7 +1,6 @@
 use std::marker::PhantomData;
 
 use crossbeam_epoch::Guard;
-use douhua::MemType;
 
 use crate::{
     base_node::{BaseNode, Node, Prefix, MAX_KEY_LEN},
@@ -22,6 +21,7 @@ use crate::{
 pub(crate) struct RawTree<K: RawKey, A: CongeeAllocator + Clone + 'static = DefaultAllocator> {
     pub(crate) root: *const Node256,
     allocator: A,
+    migration_map: dashmap::DashMap<usize, *const BaseNode>,
     _pt_key: PhantomData<K>,
 }
 
@@ -60,6 +60,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
             root: BaseNode::make_node::<Node256>(&[], &allocator)
                 .expect("Can't allocate memory for root node!") as *const Node256,
             allocator,
+            migration_map: dashmap::DashMap::new(),
             _pt_key: PhantomData,
         }
     }
@@ -67,46 +68,15 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
 
 impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
     #[inline]
-    pub(crate) fn get(&self, key: &T, _guard: &Guard) -> Option<usize> {
-        'outer: loop {
-            let mut level = 0;
-
-            let mut node = if let Ok(v) = unsafe { &*self.root }.base().read_lock() {
-                v
-            } else {
-                continue;
-            };
-
-            loop {
-                level = Self::check_prefix(node.as_ref(), key, level)?;
-
-                if key.len() <= level as usize {
-                    return None;
+    pub(crate) fn get(&self, key: &T, guard: &Guard) -> Option<usize> {
+        let backoff = Backoff::new();
+        loop {
+            match self.compute_if_present_inner(key, &mut |v| Some(v), guard) {
+                Ok(n) => {
+                    let v = n?;
+                    return Some(v.0);
                 }
-
-                let child_node = node.as_ref().get_child(key.as_bytes()[level as usize]);
-                if node.check_version().is_err() {
-                    continue 'outer;
-                }
-
-                let child_node = child_node?;
-
-                if level == (MAX_KEY_LEN - 1) as u32 {
-                    if node.as_ref().meta.mem_type == MemType::NUMA {
-                        douhua::remote_delay();
-                    }
-                    // the last level, we can return the value
-                    let tid = child_node.as_tid();
-                    return Some(tid);
-                }
-
-                level += 1;
-
-                node = if let Ok(n) = unsafe { &*child_node.as_ptr() }.read_lock() {
-                    n
-                } else {
-                    continue 'outer;
-                };
+                Err(_) => backoff.spin(),
             }
         }
     }
