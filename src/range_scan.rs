@@ -244,7 +244,11 @@ impl<'a, T: RawKey> RangeScan<'a, T> {
         }
     }
 
-    fn copy_node(&mut self, node: NodePtr, key_tracker: &PrefixKeysTracker) -> Result<(), ArtError> {
+    fn copy_node(
+        &mut self,
+        node: NodePtr,
+        key_tracker: &PrefixKeysTracker,
+    ) -> Result<(), ArtError> {
         if key_tracker.len() == MAX_KEY_LEN {
             if self.key_in_range(key_tracker) {
                 if self.result_found == self.result.len() {

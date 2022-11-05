@@ -1,4 +1,4 @@
-mod scan;
 mod basic;
+mod scan;
 
 mod alloc;

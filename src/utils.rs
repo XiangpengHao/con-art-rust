@@ -78,10 +78,16 @@ impl Default for Backoff {
     }
 }
 
-#[derive(Default, Clone, PartialEq, Eq)]
+#[derive(Default, Clone, Eq)]
 pub(crate) struct PrefixKeysTracker {
     len: usize,
     data: Prefix,
+}
+
+impl std::cmp::PartialEq for PrefixKeysTracker {
+    fn eq(&self, other: &Self) -> bool {
+        self.len == other.len && self.data[..self.len] == other.data[..other.len]
+    }
 }
 
 impl std::hash::Hash for PrefixKeysTracker {

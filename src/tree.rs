@@ -71,7 +71,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
     pub(crate) fn get(&self, key: &T, guard: &Guard) -> Option<usize> {
         let backoff = Backoff::new();
         loop {
-            match self.compute_if_present_inner(key, &mut |v| Some(v), guard) {
+            match self.compute_if_present_inner(key, &mut Some, guard) {
                 Ok(n) => {
                     let v = n?;
                     return Some(v.0);
@@ -116,7 +116,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
             match res {
                 None => {
                     level = next_level;
-                    node_key = k.as_bytes()[level as usize];
+                    node_key = k.as_bytes()[level];
 
                     let next_node_tmp = node.as_ref().get_child(node_key);
 
@@ -195,17 +195,15 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                     // 1) Create new node which will be parent of node, Set common prefix, level to this node
                     // let prefix_len = write_n.as_ref().prefix().len();
                     let new_middle_node = BaseNode::make_node::<Node4>(
-                        write_n.as_ref().prefix()[0..next_level as usize].as_ref(),
+                        write_n.as_ref().prefix()[0..next_level].as_ref(),
                         &self.allocator,
                     )?;
 
                     // 2)  add node and (tid, *k) as children
                     if next_level == (MAX_KEY_LEN - 1) {
                         // this is the last key, just insert to node
-                        unsafe { &mut *new_middle_node }.insert(
-                            k.as_bytes()[next_level as usize],
-                            NodePtr::from_tid(tid_func(None)),
-                        );
+                        unsafe { &mut *new_middle_node }
+                            .insert(k.as_bytes()[next_level], NodePtr::from_tid(tid_func(None)));
                     } else {
                         // otherwise create a new node
                         let single_new_node = BaseNode::make_node::<Node4>(
@@ -290,9 +288,9 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
     fn check_prefix(node: &BaseNode, key: &T, mut level: usize) -> Option<usize> {
         let n_prefix = node.prefix();
         let k_prefix = key.as_bytes();
-        let k_iter = k_prefix.iter().skip(level as usize);
+        let k_iter = k_prefix.iter().skip(level);
 
-        for (n, k) in n_prefix.iter().skip(level as usize).zip(k_iter) {
+        for (n, k) in n_prefix.iter().skip(level).zip(k_iter) {
             if n != k {
                 return None;
             }
@@ -305,9 +303,9 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
     fn check_prefix_not_match(&self, n: &BaseNode, key: &T, level: &mut usize) -> Option<u8> {
         let n_prefix = n.prefix();
         if !n_prefix.is_empty() {
-            let p_iter = n_prefix.iter().skip(*level as usize);
+            let p_iter = n_prefix.iter().skip(*level);
             for (i, v) in p_iter.enumerate() {
-                if *v != key.as_bytes()[*level as usize] {
+                if *v != key.as_bytes()[*level] {
                     let no_matching_key = *v;
 
                     let mut prefix = Prefix::default();
@@ -358,7 +356,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
         key: &T,
         level: usize,
     ) -> Result<ReadGuard<'a>, ArtError> {
-        let expected_node_id = PrefixKeysTracker::from_raw_key(key, level as usize);
+        let expected_node_id = PrefixKeysTracker::from_raw_key(key, level);
         let actual_node_id = unsafe { &*next_ptr }.prefix_keys(level);
         if expected_node_id != actual_node_id {
             return Err(ArtError::NodeMoved);
@@ -420,7 +418,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                         let mut write_n = node.upgrade().map_err(|(_n, v)| v)?;
                         let old = write_n
                             .as_mut()
-                            .change(k.as_bytes()[level as usize], NodePtr::from_tid(new_v));
+                            .change(k.as_bytes()[level], NodePtr::from_tid(new_v));
 
                         debug_assert_eq!(tid, old.as_tid());
 
@@ -459,7 +457,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                 Err(ArtError::NodeMoved) => {
                     // node moved, we need to check migration map to update the node to new location.
                     let mut write_n = node.upgrade().map_err(|(_n, v)| v)?;
-                    let expected_node_id = PrefixKeysTracker::from_raw_key(k, level as usize);
+                    let expected_node_id = PrefixKeysTracker::from_raw_key(k, level);
                     let val = self.migration_map.get(&expected_node_id).expect(
                         "node should be in migration map because we find a node moved error",
                     );
