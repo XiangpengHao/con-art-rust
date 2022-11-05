@@ -101,7 +101,15 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
 
         loop {
             parent_key = node_key;
-            node = unsafe { &*next_node }.read_lock()?;
+
+            node = match Self::read_and_check_next_node(next_node, k, level) {
+                Ok(n) => n,
+                Err(ArtError::NodeMoved) => {
+                    // node moved, we need to check migration map to update the node to new location.
+                    todo!("prefix keys not match, need to implement replacement");
+                }
+                Err(e) => return Err(e),
+            };
 
             let mut next_level = level;
             let res = self.check_prefix_not_match(node.as_ref(), k, &mut next_level);
@@ -118,7 +126,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                         n
                     } else {
                         let new_leaf = {
-                            if level == (MAX_KEY_LEN - 1) as u32 {
+                            if level == (MAX_KEY_LEN - 1) {
                                 // last key, just insert the tid
                                 NodePtr::from_tid(tid_func(None))
                             } else {
@@ -142,7 +150,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                             &self.allocator,
                             guard,
                         ) {
-                            if level != (MAX_KEY_LEN - 1) as u32 {
+                            if level != (MAX_KEY_LEN - 1) {
                                 unsafe {
                                     BaseNode::drop_node(
                                         new_leaf.as_ptr() as *mut BaseNode,
@@ -160,7 +168,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                         p.unlock()?;
                     }
 
-                    if level == (MAX_KEY_LEN - 1) as u32 {
+                    if level == (MAX_KEY_LEN - 1) {
                         // At this point, the level must point to the last u8 of the key,
                         // meaning that we are updating an existing value.
 
@@ -192,7 +200,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                     )?;
 
                     // 2)  add node and (tid, *k) as children
-                    if next_level == (MAX_KEY_LEN - 1) as u32 {
+                    if next_level == (MAX_KEY_LEN - 1) {
                         // this is the last key, just insert to node
                         unsafe { &mut *new_middle_node }.insert(
                             k.as_bytes()[next_level as usize],
@@ -208,7 +216,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                         unsafe { &mut *single_new_node }
                             .insert(k.as_bytes()[k.len() - 1], NodePtr::from_tid(tid_func(None)));
                         unsafe { &mut *new_middle_node }.insert(
-                            k.as_bytes()[next_level as usize],
+                            k.as_bytes()[next_level],
                             NodePtr::from_node(single_new_node as *const BaseNode),
                         );
                     }
@@ -246,6 +254,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                         continue;
                     }
                     ArtError::Oom => return Err(OOMError::new()),
+                    ArtError::NodeMoved => unreachable!(),
                 },
             }
         }
@@ -271,6 +280,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                         continue;
                     }
                     ArtError::Oom => return Err(OOMError::new()),
+                    ArtError::NodeMoved => unreachable!(),
                 },
             }
         }
@@ -292,7 +302,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
     }
 
     #[inline]
-    fn check_prefix_not_match(&self, n: &BaseNode, key: &T, level: &mut u32) -> Option<u8> {
+    fn check_prefix_not_match(&self, n: &BaseNode, key: &T, level: &mut usize) -> Option<u8> {
         let n_prefix = n.prefix();
         if !n_prefix.is_empty() {
             let p_iter = n_prefix.iter().skip(*level as usize);
@@ -343,9 +353,32 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
     }
 
     #[inline]
-    fn compute_if_present_inner<F>(
-        &self,
-        k: &T,
+    fn read_and_check_next_node<'a>(
+        next_ptr: *const BaseNode,
+        key: &T,
+        level: usize,
+    ) -> Result<ReadGuard<'a>, ArtError> {
+        let expected_node_id = PrefixKeysTracker::from_raw_key(key, level as usize);
+        let actual_node_id = unsafe { &*next_ptr }.prefix_keys(level);
+        if expected_node_id != actual_node_id {
+            return Err(ArtError::NodeMoved);
+        }
+
+        let node = unsafe { &*next_ptr }.read_lock()?;
+
+        // Need to check twice here, because the node may be changed after we get the lock
+        // The read version will handle future checks.
+        if node.as_ref().prefix_keys(level) != expected_node_id {
+            return Err(ArtError::NodeMoved);
+        }
+
+        Ok(node)
+    }
+
+    #[inline]
+    fn compute_if_present_inner<'a, F>(
+        &'a self,
+        k: &'a T,
         remapping_function: &mut F,
         guard: &Guard,
     ) -> Result<Option<(usize, Option<usize>)>, ArtError>
@@ -423,23 +456,13 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
             level += 1;
             parent = Some((node, node_key));
 
-            node = {
-                let child_ptr = child_node.as_ptr();
-                let expected_node_id = PrefixKeysTracker::from_raw_key(k, level as usize);
-                let actual_node_id = unsafe { &*child_ptr }.prefix_keys(level);
-                if expected_node_id != actual_node_id {
-                    unimplemented!("prefix keys not match, need to implement replacement");
+            node = match Self::read_and_check_next_node(child_node.as_ptr(), k, level) {
+                Ok(n) => n,
+                Err(ArtError::NodeMoved) => {
+                    // node moved, we need to check migration map to update the node to new location.
+                    todo!("prefix keys not match, need to implement replacement");
                 }
-
-                node = unsafe { &*child_ptr }.read_lock()?;
-
-                // Need to check twice here, because the node may be changed after we get the lock
-                // The read version will handle future checks.
-                if node.as_ref().prefix_keys(level) != expected_node_id {
-                    unimplemented!("prefix keys not match, need to implement replacement");
-                }
-
-                node
+                Err(e) => return Err(e),
             };
         }
     }
