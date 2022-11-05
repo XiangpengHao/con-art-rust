@@ -1,4 +1,5 @@
 use crate::base_node::{Prefix, MAX_KEY_LEN};
+use crate::key::RawKey;
 use crate::node_ptr::NodePtr;
 use core::cell::Cell;
 use core::fmt;
@@ -77,13 +78,33 @@ impl Default for Backoff {
     }
 }
 
-#[derive(Default, Clone)]
-pub(crate) struct KeyTracker {
+#[derive(Default, Clone, PartialEq, Eq)]
+pub(crate) struct PrefixKeysTracker {
     len: usize,
     data: Prefix,
 }
 
-impl KeyTracker {
+impl std::hash::Hash for PrefixKeysTracker {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.data[..self.len].hash(state);
+    }
+}
+
+impl PrefixKeysTracker {
+    pub(crate) fn from_raw_key(key: &impl RawKey, max_len: usize) -> Self {
+        let mut data = [0; MAX_KEY_LEN];
+        let len = std::cmp::min(max_len, key.len());
+
+        data[..len].copy_from_slice(&key.as_bytes()[..len]);
+        Self { len, data }
+    }
+
+    pub(crate) fn from_prefix(prefix: &Prefix, len: usize) -> Self {
+        let mut data = [0; MAX_KEY_LEN];
+        data[..len].copy_from_slice(&prefix[..len]);
+        Self { len, data }
+    }
+
     #[inline]
     pub(crate) fn push(&mut self, key: u8) {
         debug_assert!(self.len <= MAX_KEY_LEN);
@@ -108,14 +129,11 @@ impl KeyTracker {
         val.swap_bytes()
     }
 
-    /// Convert current (prefix) keys to a node id
-    pub(crate) fn to_node_id(&self) -> usize {
-        let val = unsafe { *((&self.data) as *const [u8; 8] as *const usize) };
-        val >> (MAX_KEY_LEN - self.len)
-    }
-
     #[inline]
-    pub(crate) fn append_prefix(node: NodePtr, key_tracker: &KeyTracker) -> KeyTracker {
+    pub(crate) fn append_prefix(
+        node: NodePtr,
+        key_tracker: &PrefixKeysTracker,
+    ) -> PrefixKeysTracker {
         let mut cur_key = key_tracker.clone();
         if key_tracker.len() == MAX_KEY_LEN {
             cur_key

@@ -1,7 +1,7 @@
 use crate::base_node::MAX_KEY_LEN;
 use crate::error::ArtError;
 use crate::{
-    base_node::BaseNode, key::RawKey, lock::ReadGuard, node_ptr::NodePtr, utils::KeyTracker,
+    base_node::BaseNode, key::RawKey, lock::ReadGuard, node_ptr::NodePtr, utils::PrefixKeysTracker,
 };
 use std::cmp;
 
@@ -41,7 +41,7 @@ impl<'a, T: RawKey> RangeScan<'a, T> {
         self.start < self.end
     }
 
-    fn key_in_range(&self, key: &KeyTracker) -> bool {
+    fn key_in_range(&self, key: &PrefixKeysTracker) -> bool {
         debug_assert_eq!(key.len(), 8);
         let cur_key = key.to_usize_key();
 
@@ -61,7 +61,7 @@ impl<'a, T: RawKey> RangeScan<'a, T> {
         self.to_continue = 0;
         self.result_found = 0;
 
-        let mut key_tracker = KeyTracker::default();
+        let mut key_tracker = PrefixKeysTracker::default();
 
         loop {
             node = unsafe { &*next_node }.read_lock()?;
@@ -101,7 +101,7 @@ impl<'a, T: RawKey> RangeScan<'a, T> {
                             } else if k == start_level {
                                 self.find_start(n, &node, key_tracker.clone())?;
                             } else if k > start_level && k < end_level {
-                                let cur_key = KeyTracker::append_prefix(n, &key_tracker);
+                                let cur_key = PrefixKeysTracker::append_prefix(n, &key_tracker);
                                 self.copy_node(n, &cur_key)?;
                             } else if k == end_level {
                                 self.find_end(n, &node, key_tracker.clone())?;
@@ -147,7 +147,7 @@ impl<'a, T: RawKey> RangeScan<'a, T> {
         &mut self,
         node: NodePtr,
         parent_node: &ReadGuard,
-        mut key_tracker: KeyTracker,
+        mut key_tracker: PrefixKeysTracker,
     ) -> Result<(), ArtError> {
         debug_assert!(key_tracker.len() != 8);
 
@@ -179,7 +179,7 @@ impl<'a, T: RawKey> RangeScan<'a, T> {
                     } else if k == end_level {
                         self.find_end(n, &node, key_tracker.clone())?;
                     } else if k < end_level {
-                        let cur_key = KeyTracker::append_prefix(n, &key_tracker);
+                        let cur_key = PrefixKeysTracker::append_prefix(n, &key_tracker);
                         self.copy_node(n, &cur_key)?;
                     }
                     key_tracker.pop();
@@ -197,7 +197,7 @@ impl<'a, T: RawKey> RangeScan<'a, T> {
         &mut self,
         node: NodePtr,
         parent_node: &ReadGuard,
-        mut key_tracker: KeyTracker,
+        mut key_tracker: PrefixKeysTracker,
     ) -> Result<(), ArtError> {
         debug_assert!(key_tracker.len() != 8);
 
@@ -230,7 +230,7 @@ impl<'a, T: RawKey> RangeScan<'a, T> {
                     } else if k == start_level {
                         self.find_start(n, &node, key_tracker.clone())?;
                     } else if k > start_level {
-                        let cur_key = KeyTracker::append_prefix(n, &key_tracker);
+                        let cur_key = PrefixKeysTracker::append_prefix(n, &key_tracker);
                         self.copy_node(n, &cur_key)?;
                     }
                     key_tracker.pop();
@@ -244,7 +244,7 @@ impl<'a, T: RawKey> RangeScan<'a, T> {
         }
     }
 
-    fn copy_node(&mut self, node: NodePtr, key_tracker: &KeyTracker) -> Result<(), ArtError> {
+    fn copy_node(&mut self, node: NodePtr, key_tracker: &PrefixKeysTracker) -> Result<(), ArtError> {
         if key_tracker.len() == MAX_KEY_LEN {
             if self.key_in_range(key_tracker) {
                 if self.result_found == self.result.len() {
@@ -265,7 +265,7 @@ impl<'a, T: RawKey> RangeScan<'a, T> {
 
                 key_tracker.push(k);
 
-                let cur_key = KeyTracker::append_prefix(c, &key_tracker);
+                let cur_key = PrefixKeysTracker::append_prefix(c, &key_tracker);
                 self.copy_node(c, &cur_key)?;
 
                 if self.to_continue != 0 {
@@ -283,7 +283,7 @@ impl<'a, T: RawKey> RangeScan<'a, T> {
         n: &BaseNode,
         k: &T,
         fill_key: u8,
-        key_tracker: &mut KeyTracker,
+        key_tracker: &mut PrefixKeysTracker,
     ) -> cmp::Ordering {
         let n_prefix = n.prefix();
         if !n_prefix.is_empty() {
@@ -326,7 +326,7 @@ impl<'a, T: RawKey> RangeScan<'a, T> {
     fn check_prefix_equals(
         &self,
         n: &BaseNode,
-        key_tracker: &mut KeyTracker,
+        key_tracker: &mut PrefixKeysTracker,
     ) -> PrefixCheckEqualsResult {
         let n_prefix = n.prefix();
 

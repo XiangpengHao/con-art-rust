@@ -11,7 +11,7 @@ use crate::{
     node_4::Node4,
     node_ptr::NodePtr,
     range_scan::RangeScan,
-    utils::Backoff,
+    utils::{Backoff, PrefixKeysTracker},
     CongeeAllocator, DefaultAllocator,
 };
 
@@ -21,7 +21,7 @@ use crate::{
 pub(crate) struct RawTree<K: RawKey, A: CongeeAllocator + Clone + 'static = DefaultAllocator> {
     pub(crate) root: *const Node256,
     allocator: A,
-    migration_map: dashmap::DashMap<usize, *const BaseNode>,
+    migration_map: dashmap::DashMap<PrefixKeysTracker, *const BaseNode>,
     _pt_key: PhantomData<K>,
 }
 
@@ -277,7 +277,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
     }
 
     #[inline]
-    fn check_prefix(node: &BaseNode, key: &T, mut level: u32) -> Option<u32> {
+    fn check_prefix(node: &BaseNode, key: &T, mut level: usize) -> Option<usize> {
         let n_prefix = node.prefix();
         let k_prefix = key.as_bytes();
         let k_iter = k_prefix.iter().skip(level as usize);
@@ -364,7 +364,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                 return Ok(None);
             };
 
-            node_key = k.as_bytes()[level as usize];
+            node_key = k.as_bytes()[level];
 
             let child_node = node.as_ref().get_child(node_key);
             node.check_version()?;
@@ -374,7 +374,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                 None => return Ok(None),
             };
 
-            if level == (MAX_KEY_LEN - 1) as u32 {
+            if level == (MAX_KEY_LEN - 1) {
                 let tid = child_node.as_tid();
                 let new_v = remapping_function(tid);
 
@@ -422,7 +422,25 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
 
             level += 1;
             parent = Some((node, node_key));
-            node = unsafe { &*child_node.as_ptr() }.read_lock()?;
+
+            node = {
+                let child_ptr = child_node.as_ptr();
+                let expected_node_id = PrefixKeysTracker::from_raw_key(k, level as usize);
+                let actual_node_id = unsafe { &*child_ptr }.prefix_keys(level);
+                if expected_node_id != actual_node_id {
+                    unimplemented!("prefix keys not match, need to implement replacement");
+                }
+
+                node = unsafe { &*child_ptr }.read_lock()?;
+
+                // Need to check twice here, because the node may be changed after we get the lock
+                // The read version will handle future checks.
+                if node.as_ref().prefix_keys(level) != expected_node_id {
+                    unimplemented!("prefix keys not match, need to implement replacement");
+                }
+
+                node
+            };
         }
     }
 
@@ -472,7 +490,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
     ) -> Result<Option<(usize, usize, usize)>, ArtError> {
         let mut node = unsafe { &*self.root }.base().read_lock()?;
 
-        let mut key_tracker = crate::utils::KeyTracker::default();
+        let mut key_tracker = crate::utils::PrefixKeysTracker::default();
 
         loop {
             for k in node.as_ref().prefix() {

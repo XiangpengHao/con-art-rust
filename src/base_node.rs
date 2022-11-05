@@ -14,6 +14,7 @@ use crate::{
     node_4::{Node4, Node4Iter},
     node_48::{Node48, Node48Iter},
     node_ptr::NodePtr,
+    utils::PrefixKeysTracker,
     CongeeAllocator,
 };
 
@@ -100,7 +101,7 @@ pub(crate) struct BaseNode {
 }
 
 pub(crate) struct NodeMeta {
-    prefix_cnt: u32,
+    prefix_cnt: u32, // prefix cnt is also node level, it can be u16
     pub(crate) count: u16,
     node_type: NodeType,
     pub(crate) mem_type: MemType,
@@ -264,6 +265,11 @@ impl BaseNode {
 
     fn is_obsolete(version: usize) -> bool {
         (version & 1) == 1
+    }
+
+    pub(crate) fn prefix_keys(&self, level: usize) -> PrefixKeysTracker {
+        debug_assert!(level <= self.meta.prefix_cnt as usize);
+        PrefixKeysTracker::from_prefix(&self.meta.prefix, level)
     }
 
     pub(crate) fn prefix(&self) -> &[u8] {
