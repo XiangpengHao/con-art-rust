@@ -5,6 +5,7 @@ use std::fmt::{self, Debug, Display, Formatter};
 pub(crate) enum ArtError {
     VersionNotMatch(usize),
     Locked(usize),
+    NeedRestart,
     Oom,
     NodeMoved,
 }

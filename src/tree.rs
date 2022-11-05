@@ -249,7 +249,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
             match self.insert_inner(&k, &mut |_| tid, guard) {
                 Ok(v) => return Ok(v),
                 Err(e) => match e {
-                    ArtError::Locked(_) | ArtError::VersionNotMatch(_) => {
+                    ArtError::Locked(_) | ArtError::VersionNotMatch(_) | ArtError::NeedRestart => {
                         backoff.spin();
                         continue;
                     }
@@ -275,7 +275,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
             match self.insert_inner(&k, insert_func, guard) {
                 Ok(v) => return Ok(v),
                 Err(e) => match e {
-                    ArtError::Locked(_) | ArtError::VersionNotMatch(_) => {
+                    ArtError::Locked(_) | ArtError::VersionNotMatch(_) | ArtError::NeedRestart => {
                         backoff.spin();
                         continue;
                     }
@@ -454,16 +454,27 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
             }
 
             level += 1;
-            parent = Some((node, node_key));
-
-            node = match Self::read_and_check_next_node(child_node.as_ptr(), k, level) {
+            let next_node = match Self::read_and_check_next_node(child_node.as_ptr(), k, level) {
                 Ok(n) => n,
                 Err(ArtError::NodeMoved) => {
                     // node moved, we need to check migration map to update the node to new location.
-                    todo!("prefix keys not match, need to implement replacement");
+                    let mut write_n = node.upgrade().map_err(|(_n, v)| v)?;
+                    let expected_node_id = PrefixKeysTracker::from_raw_key(k, level as usize);
+                    let val = self.migration_map.get(&expected_node_id).expect(
+                        "node should be in migration map because we find a node moved error",
+                    );
+                    let new_child_ptr = *val.value();
+                    write_n
+                        .as_mut()
+                        .change(node_key, NodePtr::from_node(new_child_ptr));
+                    return Err(ArtError::NeedRestart);
                 }
                 Err(e) => return Err(e),
             };
+
+            parent = Some((node, node_key));
+
+            node = next_node;
         }
     }
 
