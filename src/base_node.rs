@@ -289,7 +289,7 @@ impl BaseNode {
     }
 
     #[inline]
-    pub(crate) fn read_lock(&self) -> Result<ReadGuard, ArtError> {
+    pub(crate) fn read_lock<'a>(&'a self) -> Result<ReadGuard<'a>, ArtError> {
         let version = self.type_version_lock_obsolete.load(Ordering::Acquire);
 
         // #[cfg(test)]

@@ -106,7 +106,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
         loop {
             parent_key = node_key;
 
-            node = match self.read_check_replace_node(next_node, k, level) {
+            node = match self.read_check_replace_node(next_node, k, level, guard) {
                 Ok(n) => n,
                 Err(ArtError::NodeMoved) => {
                     // node moved, we need to check migration map to update the node to new location.
@@ -357,7 +357,11 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
         }
     }
 
-    fn promote_node<'a>(&self, node: ReadGuard) -> Result<ReadGuard<'a>, ArtError> {
+    fn promote_node<'a>(
+        &self,
+        node: ReadGuard<'static>,
+        guard: &Guard,
+    ) -> Result<ReadGuard<'a>, ArtError> {
         let mut write_n = node.upgrade().map_err(|(_, v)| v)?;
 
         let new_node = match write_n.as_ref().meta.node_type {
@@ -370,7 +374,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                 unsafe {
                     { &*(write_n.as_ref() as *const BaseNode as *const Node4) }.copy_to(&mut *node);
                 }
-                unsafe { (&*node).base().read_lock().unwrap() }
+                unsafe { (*node).base().read_lock().unwrap() }
             }
             NodeType::N16 => {
                 let node = BaseNode::make_node::<Node16>(
@@ -382,7 +386,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                     { &*(write_n.as_ref() as *const BaseNode as *const Node16) }
                         .copy_to(&mut *node);
                 }
-                unsafe { (&*node).base().read_lock().unwrap() }
+                unsafe { (*node).base().read_lock().unwrap() }
             }
             NodeType::N48 => {
                 let node = BaseNode::make_node::<Node48>(
@@ -394,7 +398,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                     { &*(write_n.as_ref() as *const BaseNode as *const Node48) }
                         .copy_to(&mut *node);
                 }
-                unsafe { (&*node).base().read_lock().unwrap() }
+                unsafe { (*node).base().read_lock().unwrap() }
             }
             NodeType::N256 => {
                 let node = BaseNode::make_node::<Node256>(
@@ -406,7 +410,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
                     { &*(write_n.as_ref() as *const BaseNode as *const Node256) }
                         .copy_to(&mut *node);
                 }
-                unsafe { (&*node).base().read_lock().unwrap() }
+                unsafe { (*node).base().read_lock().unwrap() }
             }
         };
         let write_n_prefix = write_n
@@ -417,6 +421,11 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
         self.migration_map
             .insert(write_n_prefix, new_node.as_ref() as *const BaseNode);
 
+        let allocator = self.allocator.clone();
+        guard.defer(move || unsafe {
+            BaseNode::drop_node(write_n.as_mut(), allocator);
+            std::mem::forget(write_n);
+        });
         Ok(new_node)
     }
 
@@ -426,6 +435,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
         next_ptr: *const BaseNode,
         key: &T,
         level: usize,
+        guard: &Guard,
     ) -> Result<ReadGuard<'a>, ArtError> {
         let expected_node_id = PrefixKeysTracker::from_raw_key(key, level);
         let actual_node_id = unsafe { &*next_ptr }.prefix_keys(level);
@@ -443,7 +453,7 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
 
         // Condition for promoting a node to local memory.
         if node.as_ref().meta.mem_type == MemType::NUMA || thread_rng().gen_range(0..100) < 5 {
-            node = match self.promote_node(node) {
+            node = match self.promote_node(node, guard) {
                 Ok(v) => v,
                 Err(ArtError::Oom) => {
                     todo!("Need to evict Local nodes to make room for promotion")
@@ -536,7 +546,8 @@ impl<T: RawKey, A: CongeeAllocator + Clone> RawTree<T, A> {
             }
 
             level += 1;
-            let next_node = match self.read_check_replace_node(child_node.as_ptr(), k, level) {
+            let next_node = match self.read_check_replace_node(child_node.as_ptr(), k, level, guard)
+            {
                 Ok(n) => n,
                 Err(ArtError::NodeMoved) => {
                     // node moved, we need to check migration map to update the node to new location.
