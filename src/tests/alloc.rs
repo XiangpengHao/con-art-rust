@@ -3,6 +3,8 @@ use std::sync::{
     Arc,
 };
 
+use douhua::MemType;
+
 use crate::{node_256::Node256, node_4::Node4, Art, CongeeAllocator};
 
 struct SmallAllocator {
@@ -13,17 +15,15 @@ unsafe impl CongeeAllocator for Arc<SmallAllocator> {
     fn allocate(
         &self,
         layout: std::alloc::Layout,
-    ) -> Result<(std::ptr::NonNull<[u8]>, douhua::MemType), douhua::AllocError> {
+        mem_type: MemType,
+    ) -> Result<std::ptr::NonNull<[u8]>, douhua::AllocError> {
         let current_size = self.max_size.load(Ordering::Relaxed);
         if current_size >= layout.size() {
             self.max_size
                 .store(current_size - layout.size(), Ordering::Relaxed);
             let ptr = unsafe { std::alloc::alloc(layout) };
             let ptr_slice = std::ptr::slice_from_raw_parts_mut(ptr, layout.size());
-            Ok((
-                std::ptr::NonNull::new(ptr_slice).unwrap(),
-                douhua::MemType::DRAM,
-            ))
+            Ok(std::ptr::NonNull::new(ptr_slice).unwrap())
         } else {
             return Err(douhua::AllocError::OutOfMemory);
         }

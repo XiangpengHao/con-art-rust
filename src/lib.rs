@@ -51,7 +51,8 @@ pub unsafe trait CongeeAllocator: Send + Sync {
     fn allocate(
         &self,
         layout: std::alloc::Layout,
-    ) -> Result<(std::ptr::NonNull<[u8]>, MemType), AllocError>;
+        mem_type: MemType,
+    ) -> Result<std::ptr::NonNull<[u8]>, AllocError>;
 
     /// # Safety
     /// Please check: https://doc.rust-lang.org/std/alloc/trait.Allocator.html
@@ -62,11 +63,15 @@ pub unsafe trait CongeeAllocator: Send + Sync {
         mem_type: douhua::MemType,
     );
 
-    fn allocate_zeroed(&self, layout: Layout) -> Result<(NonNull<[u8]>, MemType), AllocError> {
-        let (mut ptr, mem_type) = self.allocate(layout)?;
+    fn allocate_zeroed(
+        &self,
+        layout: Layout,
+        mem_type: MemType,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        let mut ptr = self.allocate(layout, mem_type)?;
         // SAFETY: `alloc` returns a valid memory block
         unsafe { ptr.as_mut().as_mut_ptr().write_bytes(0, ptr.len()) }
-        Ok((ptr, mem_type))
+        Ok(ptr)
     }
 }
 
@@ -74,10 +79,11 @@ unsafe impl CongeeAllocator for DefaultAllocator {
     fn allocate(
         &self,
         layout: std::alloc::Layout,
-    ) -> Result<(std::ptr::NonNull<[u8]>, MemType), AllocError> {
+        _mem_type: MemType,
+    ) -> Result<std::ptr::NonNull<[u8]>, AllocError> {
         let ptr = unsafe { std::alloc::alloc(layout) };
         let ptr_slice = std::ptr::slice_from_raw_parts_mut(ptr, layout.size());
-        Ok((std::ptr::NonNull::new(ptr_slice).unwrap(), MemType::DRAM))
+        Ok(std::ptr::NonNull::new(ptr_slice).unwrap())
     }
 
     unsafe fn deallocate(

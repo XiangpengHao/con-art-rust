@@ -1,6 +1,7 @@
 use douhua::{AllocError, MemType};
 #[cfg(all(feature = "shuttle", test))]
 use shuttle::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicBool;
 #[cfg(not(all(feature = "shuttle", test)))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -14,7 +15,7 @@ use crate::{
     node_4::{Node4, Node4Iter},
     node_48::{Node48, Node48Iter},
     node_ptr::NodePtr,
-    utils::PrefixKeysTracker,
+    utils::{AllocPolicy, PrefixKeysTracker},
     CongeeAllocator,
 };
 
@@ -101,9 +102,10 @@ pub(crate) struct BaseNode {
 }
 
 pub(crate) struct NodeMeta {
-    prefix_cnt: u32, // prefix cnt is also node level, it can be u16
+    pub(crate) prefix_cnt: u16, // prefix cnt is also node level, it can be u16
     pub(crate) count: u16,
-    node_type: NodeType,
+    referenced: AtomicBool,
+    pub(crate) node_type: NodeType,
     pub(crate) mem_type: MemType,
     prefix: Prefix,
 }
@@ -112,7 +114,7 @@ pub(crate) struct NodeMeta {
 mod const_assert {
     use super::*;
     static_assertions::const_assert_eq!(std::mem::size_of::<NodeMeta>(), 16);
-    static_assertions::const_assert_eq!(std::mem::align_of::<NodeMeta>(), 4);
+    static_assertions::const_assert_eq!(std::mem::align_of::<NodeMeta>(), 2);
     static_assertions::const_assert_eq!(std::mem::size_of::<BaseNode>(), 24);
     static_assertions::const_assert_eq!(std::mem::align_of::<BaseNode>(), 8);
 }
@@ -193,7 +195,8 @@ impl BaseNode {
         }
 
         let meta = NodeMeta {
-            prefix_cnt: prefix.len() as u32,
+            prefix_cnt: prefix.len() as u16,
+            referenced: AtomicBool::new(true),
             count: 0,
             prefix: prefix_v,
             node_type: n_type,
@@ -206,15 +209,51 @@ impl BaseNode {
         }
     }
 
+    /// Make node will try to allocate from local memory first, then from remote memory
     pub(crate) fn make_node<N: Node>(
         prefix: &[u8],
         allocator: &impl CongeeAllocator,
+        alloc_policy: AllocPolicy,
     ) -> Result<*mut N, ArtError> {
         let layout = N::get_type().node_layout();
-        let (ptr, mem_type) = allocator.allocate_zeroed(layout).map_err(|e| match e {
-            AllocError::OutOfMemory => ArtError::Oom,
-            _ => panic!("unexpected error from allocator: {:?}", e),
-        })?;
+
+        let (ptr, mem_type) = match alloc_policy {
+            AllocPolicy::LocalOnly => {
+                let ptr =
+                    allocator
+                        .allocate_zeroed(layout, MemType::DRAM)
+                        .map_err(|e| match e {
+                            AllocError::OutOfMemory => ArtError::Oom,
+                            _ => panic!("unexpected error from allocator: {:?}", e),
+                        })?;
+                (ptr, MemType::DRAM)
+            }
+            AllocPolicy::RemoteOnly => {
+                let ptr =
+                    allocator
+                        .allocate_zeroed(layout, MemType::NUMA)
+                        .map_err(|e| match e {
+                            AllocError::OutOfMemory => ArtError::Oom,
+                            _ => panic!("unexpected error from allocator: {:?}", e),
+                        })?;
+                (ptr, MemType::NUMA)
+            }
+            AllocPolicy::BestEffort => match allocator.allocate_zeroed(layout, MemType::DRAM) {
+                Ok(ptr) => (ptr, MemType::DRAM),
+                Err(AllocError::OutOfMemory) => {
+                    let ptr =
+                        allocator
+                            .allocate_zeroed(layout, MemType::NUMA)
+                            .map_err(|e| match e {
+                                AllocError::OutOfMemory => ArtError::Oom,
+                                _ => panic!("unexpected error from allocator: {:?}", e),
+                            })?;
+                    (ptr, MemType::NUMA)
+                }
+                Err(e) => panic!("unexpected error from allocator: {:?}", e),
+            },
+        };
+
         let ptr = ptr.as_non_null_ptr().as_ptr() as *mut BaseNode;
         let node = BaseNode::new(N::get_type(), prefix, mem_type);
         unsafe {
@@ -235,6 +274,14 @@ impl BaseNode {
         let mem_type = (*node).meta.mem_type;
         let ptr = std::ptr::NonNull::new(node as *mut u8).unwrap();
         allocator.deallocate(ptr, layout, mem_type);
+    }
+
+    pub(crate) fn mark_referenced(&self) {
+        // try not to write if it is already referenced
+        let referenced = self.meta.referenced.load(Ordering::Relaxed);
+        if !referenced {
+            self.meta.referenced.store(true, Ordering::Relaxed);
+        }
     }
 
     pub(crate) fn get_type(&self) -> NodeType {
@@ -307,7 +354,11 @@ impl BaseNode {
 
         let mut write_n = n.upgrade().map_err(|v| v.1)?;
 
-        let n_big = BaseNode::make_node::<BiggerT>(write_n.as_ref().base().prefix(), allocator)?;
+        let n_big = BaseNode::make_node::<BiggerT>(
+            write_n.as_ref().base().prefix(),
+            allocator,
+            AllocPolicy::BestEffort,
+        )?;
         write_n.as_ref().copy_to(unsafe { &mut *n_big });
         unsafe { &mut *n_big }.insert(val.0, val.1);
 

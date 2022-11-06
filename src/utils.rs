@@ -78,6 +78,13 @@ impl Default for Backoff {
     }
 }
 
+pub(crate) enum AllocPolicy {
+    LocalOnly,
+    #[allow(dead_code)]
+    RemoteOnly,
+    BestEffort,
+}
+
 #[derive(Default, Clone, Eq)]
 pub(crate) struct PrefixKeysTracker {
     len: usize,
