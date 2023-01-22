@@ -129,10 +129,13 @@ impl KeyTracker {
     }
 }
 
-/// Inject error at 5% of the time
+/// Inject error at given chance% 
 #[cfg(test)]
-pub(crate) fn fail_point(err: crate::error::ArtError) -> Result<(), crate::error::ArtError> {
-    if random(100) < 5 {
+pub(crate) fn fail_point(
+    chance: u32,
+    err: crate::error::ArtError,
+) -> Result<(), crate::error::ArtError> {
+    if random(100) < chance {
         Err(err)
     } else {
         Ok(())

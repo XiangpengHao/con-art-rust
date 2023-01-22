@@ -18,7 +18,7 @@ impl<'a, T: Node> ConcreteReadGuard<'a, T> {
     pub(crate) fn upgrade(self) -> Result<ConcreteWriteGuard<'a, T>, (Self, ArtError)> {
         #[cfg(test)]
         {
-            if crate::utils::fail_point(ArtError::VersionNotMatch(self.version)).is_err() {
+            if crate::utils::fail_point(5, ArtError::VersionNotMatch(self.version)).is_err() {
                 let v = self.version;
                 return Err((self, ArtError::VersionNotMatch(v)));
             };
@@ -78,6 +78,12 @@ pub(crate) struct ReadGuard<'a> {
     node: &'a UnsafeCell<BaseNode>,
 }
 
+impl Drop for ReadGuard<'_> {
+    fn drop(&mut self) {
+        panic!("ReadGuard should not be automatically dropped, use `check_and_unlock()` instead")
+    }
+}
+
 impl<'a> ReadGuard<'a> {
     pub(crate) fn new(v: usize, node: &'a BaseNode) -> Self {
         Self {
@@ -93,7 +99,7 @@ impl<'a> ReadGuard<'a> {
             .load(Ordering::Acquire);
 
         #[cfg(test)]
-        crate::utils::fail_point(ArtError::VersionNotMatch(v))?;
+        crate::utils::fail_point(5, ArtError::VersionNotMatch(v))?;
 
         if v == self.version {
             Ok(v)
@@ -102,18 +108,27 @@ impl<'a> ReadGuard<'a> {
         }
     }
 
-    pub(crate) fn unlock(self) -> Result<usize, ArtError> {
-        self.check_version()
+    pub(crate) fn check_and_unlock(self) -> Result<usize, ArtError> {
+        let v = self.check_version();
+        self.drop();
+        v
     }
 
     #[must_use]
     pub(crate) fn into_concrete<T: Node>(self) -> ConcreteReadGuard<'a, T> {
         assert_eq!(self.as_ref().get_type(), T::get_type());
 
-        ConcreteReadGuard {
+        let new_rg = ConcreteReadGuard {
             version: self.version,
             node: unsafe { &*(self.node as *const UnsafeCell<BaseNode> as *const UnsafeCell<T>) },
-        }
+        };
+        self.drop();
+        new_rg
+    }
+
+    /// We disabled auto drop, requires caller to explicitly call `drop`
+    pub(crate) fn drop(self) {
+        std::mem::forget(self);
     }
 
     pub(crate) fn as_ref(&self) -> &BaseNode {
@@ -123,7 +138,7 @@ impl<'a> ReadGuard<'a> {
     pub(crate) fn upgrade(self) -> Result<WriteGuard<'a>, (Self, ArtError)> {
         #[cfg(test)]
         {
-            if crate::utils::fail_point(ArtError::VersionNotMatch(self.version)).is_err() {
+            if crate::utils::fail_point(5, ArtError::VersionNotMatch(self.version)).is_err() {
                 let v = self.version;
                 return Err((self, ArtError::VersionNotMatch(v)));
             };
@@ -139,9 +154,11 @@ impl<'a> ReadGuard<'a> {
                 Ordering::Release,
                 Ordering::Relaxed,
             ) {
-            Ok(_) => Ok(WriteGuard {
-                node: unsafe { &mut *self.node.get() },
-            }),
+            Ok(_) => {
+                let node = unsafe { &mut *self.node.get() };
+                self.drop();
+                Ok(WriteGuard { node })
+            }
             Err(v) => Err((self, ArtError::VersionNotMatch(v))),
         }
     }

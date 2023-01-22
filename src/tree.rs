@@ -84,23 +84,29 @@ impl<T: RawKey, A: Allocator + Clone + Send> RawTree<T, A> {
                 }
 
                 let child_node = node.as_ref().get_child(key.as_bytes()[level as usize]);
-                if node.check_version().is_err() {
-                    continue 'outer;
-                }
 
                 let child_node = child_node?;
 
                 if level == (MAX_KEY_LEN - 1) as u32 {
                     // the last level, we can return the value
+                    if node.check_and_unlock().is_err() {
+                        continue 'outer;
+                    }
                     let tid = child_node.as_tid();
                     return Some(tid);
                 }
 
                 level += 1;
 
-                node = if let Ok(n) = unsafe { &*child_node.as_ptr() }.read_lock() {
+                let new_node = if let Ok(n) = unsafe { &*child_node.as_ptr() }.read_lock() {
                     n
                 } else {
+                    std::mem::forget(node);
+                    continue 'outer;
+                };
+                let old_guard = std::mem::replace(&mut node, new_node);
+                if old_guard.check_and_unlock().is_err() {
+                    std::mem::forget(node);
                     continue 'outer;
                 };
             }
@@ -127,7 +133,13 @@ impl<T: RawKey, A: Allocator + Clone + Send> RawTree<T, A> {
 
         loop {
             parent_key = node_key;
-            node = unsafe { &*next_node }.read_lock()?;
+            node = match unsafe { &*next_node }.read_lock() {
+                Ok(n) => n,
+                Err(e) => {
+                    std::mem::forget(parent_node);
+                    return Err(e);
+                }
+            };
 
             let mut next_level = level;
             let res = self.check_prefix_not_match(node.as_ref(), k, &mut next_level);
@@ -138,7 +150,11 @@ impl<T: RawKey, A: Allocator + Clone + Send> RawTree<T, A> {
 
                     let next_node_tmp = node.as_ref().get_child(node_key);
 
-                    node.check_version()?;
+                    if let Err(e) = node.check_version() {
+                        std::mem::forget(parent_node); // explicitly drop the parent node
+                        std::mem::forget(node);
+                        return Err(e);
+                    }
 
                     let next_node_tmp = if let Some(n) = next_node_tmp {
                         n
@@ -182,8 +198,12 @@ impl<T: RawKey, A: Allocator + Clone + Send> RawTree<T, A> {
                         return Ok(None);
                     };
 
-                    if let Some(p) = parent_node {
-                        p.unlock()?;
+                    if let Some(ref tp) = parent_node {
+                        if let Err(e) = tp.check_version() {
+                            std::mem::forget(node);
+                            std::mem::forget(parent_node);
+                            return Err(e);
+                        };
                     }
 
                     if level == (MAX_KEY_LEN - 1) as u32 {
@@ -207,8 +227,18 @@ impl<T: RawKey, A: Allocator + Clone + Send> RawTree<T, A> {
                 }
 
                 Some(no_match_key) => {
-                    let mut write_p = parent_node.unwrap().upgrade().map_err(|(_n, v)| v)?;
-                    let mut write_n = node.upgrade().map_err(|(_n, v)| v)?;
+                    let mut write_p = match parent_node.unwrap().upgrade() {
+                        Ok(n) => n,
+                        Err((n, v)) => {
+                            std::mem::forget(n);
+                            std::mem::forget(node);
+                            return Err(v);
+                        }
+                    };
+                    let mut write_n = node.upgrade().map_err(|(n, v)| {
+                        std::mem::forget(n);
+                        v
+                    })?;
 
                     // 1) Create new node which will be parent of node, Set common prefix, level to this node
                     // let prefix_len = write_n.as_ref().prefix().len();
@@ -251,7 +281,8 @@ impl<T: RawKey, A: Allocator + Clone + Send> RawTree<T, A> {
                     return Ok(None);
                 }
             }
-            parent_node = Some(node);
+            let old_p = parent_node.replace(node);
+            std::mem::forget(old_p);
         }
     }
 
@@ -393,7 +424,11 @@ impl<T: RawKey, A: Allocator + Clone + Send> RawTree<T, A> {
             node_key = k.as_bytes()[level as usize];
 
             let child_node = node.as_ref().get_child(node_key);
-            node.check_version()?;
+            if let Err(e) = node.check_version() {
+                node.drop();
+                std::mem::forget(parent);
+                return Err(e);
+            };
 
             let child_node = match child_node {
                 Some(n) => n,
@@ -410,7 +445,10 @@ impl<T: RawKey, A: Allocator + Clone + Send> RawTree<T, A> {
                             // the value is not change, early return;
                             return Ok(Some((tid, Some(tid))));
                         }
-                        let mut write_n = node.upgrade().map_err(|(_n, v)| v)?;
+                        let mut write_n = node.upgrade().map_err(|(n, v)| {
+                            n.drop();
+                            v
+                        })?;
                         let old = write_n
                             .as_mut()
                             .change(k.as_bytes()[level as usize], NodePtr::from_tid(new_v));
@@ -424,9 +462,15 @@ impl<T: RawKey, A: Allocator + Clone + Send> RawTree<T, A> {
                         debug_assert!(parent.is_some()); // reaching leaf means we must have parent, bcs root can't be leaf
                         if node.as_ref().get_count() == 1 {
                             let (parent_node, parent_key) = parent.unwrap();
-                            let mut write_p = parent_node.upgrade().map_err(|(_n, v)| v)?;
+                            let mut write_p = parent_node.upgrade().map_err(|(n, v)| {
+                                n.drop();
+                                v
+                            })?;
 
-                            let mut write_n = node.upgrade().map_err(|(_n, v)| v)?;
+                            let mut write_n = node.upgrade().map_err(|(n, v)| {
+                                n.drop();
+                                v
+                            })?;
 
                             write_p.as_mut().remove(parent_key);
 
@@ -447,8 +491,17 @@ impl<T: RawKey, A: Allocator + Clone + Send> RawTree<T, A> {
             }
 
             level += 1;
-            parent = Some((node, node_key));
-            node = unsafe { &*child_node.as_ptr() }.read_lock()?;
+            let next_n = match unsafe { &*child_node.as_ptr() }.read_lock() {
+                Ok(n) => n,
+                Err(e) => {
+                    std::mem::forget(parent);
+                    std::mem::forget(node);
+                    return Err(e);
+                }
+            };
+            let old_n = std::mem::replace(&mut node, next_n);
+            let old_p = parent.replace((old_n, node_key));
+            std::mem::forget(old_p);
         }
     }
 

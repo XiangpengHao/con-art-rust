@@ -239,8 +239,8 @@ impl BaseNode {
     pub(crate) fn read_lock(&self) -> Result<ReadGuard, ArtError> {
         let version = self.type_version_lock_obsolete.load(Ordering::Acquire);
 
-        // #[cfg(test)]
-        // crate::utils::fail_point(ArtError::Locked(version))?;
+        #[cfg(test)]
+        crate::utils::fail_point(1, ArtError::Locked(version))?;
 
         if Self::is_locked(version) || Self::is_obsolete(version) {
             return Err(ArtError::Locked(version));
@@ -274,7 +274,7 @@ impl BaseNode {
     ) -> Result<(), ArtError> {
         if !n.as_ref().is_full() {
             if let Some(p) = parent.1 {
-                p.unlock()?;
+                p.check_and_unlock()?;
             }
 
             let mut write_n = n.upgrade().map_err(|v| v.1)?;
@@ -287,9 +287,15 @@ impl BaseNode {
             .1
             .expect("parent node must present when current node is full");
 
-        let mut write_p = p.upgrade().map_err(|v| v.1)?;
+        let mut write_p = p.upgrade().map_err(|v| {
+            std::mem::forget(v.0);
+            v.1
+        })?;
 
-        let mut write_n = n.upgrade().map_err(|v| v.1)?;
+        let mut write_n = n.upgrade().map_err(|v| {
+            std::mem::forget(v.0);
+            v.1
+        })?;
 
         let n_big = BaseNode::make_node::<BiggerT>(write_n.as_ref().base().prefix(), allocator)?;
         write_n.as_ref().copy_to(unsafe { &mut *n_big });
