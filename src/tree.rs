@@ -191,7 +191,6 @@ impl<T: RawKey, A: Allocator + Clone + Send> RawTree<T, A> {
                         let old = node.as_ref().get_child(node_key).unwrap().as_tid();
                         let new = tid_func(Some(old));
                         if old == new {
-                            node.check_version()?;
                             return Ok(Some(old));
                         }
 
