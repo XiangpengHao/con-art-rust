@@ -12,17 +12,17 @@ license = "MIT"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-crossbeam-epoch = "0.9.15"
+crossbeam-epoch = "0.9.18"
 rand = { version = "0.8.5", optional = true }
-serde = { version = "1.0.188", features = ["derive"], optional = true }
+serde = { version = "1.0.196", features = ["derive"], optional = true }
 
 [dev-dependencies]
 rand = "0.8.5"
-shumai = "0.2.13"
-serde = "1.0.188"
-serde_json = "1.0.105"
+shumai = "0.2.14"
+serde = "1.0.196"
+serde_json = "1.0.113"
 flurry = "0.4.0"
-mimalloc = { version = "0.1.38", default-features = false }
+mimalloc = { version = "0.1.39", default-features = false }
 selfsimilar = "0.1.0"
 static_assertions = "1.1.0"
 shuttle = "0.6.1"
