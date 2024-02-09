@@ -180,9 +180,9 @@ impl<T: RawKey, A: Allocator + Clone + Send> RawTree<T, A> {
                         return Ok(None);
                     };
 
-                    if let Some(p) = parent_node {
-                        p.unlock()?;
-                    }
+                    // if let Some(p) = parent_node {
+                    //     p.unlock()?;
+                    // }
 
                     if level == (MAX_KEY_LEN - 1) as u32 {
                         // At this point, the level must point to the last u8 of the key,

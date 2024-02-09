@@ -64,7 +64,7 @@ use rand::{thread_rng, Rng, SeedableRng};
 #[test]
 fn test_concurrent_insert() {
     let key_cnt_per_thread = 5_000;
-    let n_thread = 3;
+    let n_thread = 6;
     let mut key_space = Vec::with_capacity(key_cnt_per_thread * n_thread);
     for i in 0..key_space.capacity() {
         key_space.push(i);
@@ -108,10 +108,10 @@ fn shuttle_insert_only() {
     let mut config = shuttle::Config::default();
     config.max_steps = shuttle::MaxSteps::None;
     let mut runner = shuttle::PortfolioRunner::new(true, config);
-    runner.add(shuttle::scheduler::PctScheduler::new(5, 2_000));
-    runner.add(shuttle::scheduler::PctScheduler::new(5, 2_000));
-    runner.add(shuttle::scheduler::RandomScheduler::new(2_000));
-    runner.add(shuttle::scheduler::RandomScheduler::new(2_000));
+    runner.add(shuttle::scheduler::PctScheduler::new(5, 20_000));
+    runner.add(shuttle::scheduler::PctScheduler::new(5, 20_000));
+    runner.add(shuttle::scheduler::RandomScheduler::new(20_000));
+    runner.add(shuttle::scheduler::RandomScheduler::new(20_000));
 
     runner.run(test_concurrent_insert);
 }
