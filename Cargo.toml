@@ -22,6 +22,7 @@ shumai = "0.2.16"
 serde = "1.0.214"
 serde_json = "1.0.132"
 flurry = "0.5.1"
+dashmap = "6.1.0"
 mimalloc = { version = "0.1.43", default-features = false }
 selfsimilar = "0.1.0"
 shuttle = "0.8.0"

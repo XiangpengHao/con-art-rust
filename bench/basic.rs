@@ -2,7 +2,7 @@ use congee::Congee;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use shumai::{config, ShumaiBench};
-use std::{cell::UnsafeCell, fmt::Display};
+use std::{cell::UnsafeCell, collections::BTreeMap, fmt::Display};
 
 use mimalloc::MiMalloc;
 
@@ -26,6 +26,8 @@ impl Display for Workload {
 #[derive(Serialize, Clone, Copy, Debug, Deserialize)]
 pub enum IndexType {
     SingleHashMap,
+    BTree,
+    Dash,
     Flurry,
     ART,
 }
@@ -73,6 +75,76 @@ trait DBIndex: Send + Sync {
         results: &mut [(usize, usize)],
         guard: &Self::Guard<'a>,
     ) -> usize;
+}
+
+struct BTreeMapWrapper {
+    map: UnsafeCell<BTreeMap<usize, usize>>, // only allow single thread access
+}
+
+impl BTreeMapWrapper {
+    fn new() -> Self {
+        Self {
+            map: UnsafeCell::new(BTreeMap::new()),
+        }
+    }
+}
+
+unsafe impl Send for BTreeMapWrapper {}
+unsafe impl Sync for BTreeMapWrapper {}
+
+impl DBIndex for BTreeMapWrapper {
+    type Guard<'a> = ();
+
+    fn pin(&self) -> Self::Guard<'_> {
+        ()
+    }
+
+    fn insert<'a>(&'a self, key: usize, v: usize, _: &Self::Guard<'a>) {
+        unsafe {
+            (*self.map.get()).insert(key, v);
+        }
+    }
+
+    fn get<'a>(&'a self, key: &usize, _: &Self::Guard<'a>) -> Option<usize> {
+        unsafe { (*self.map.get()).get(key).cloned() }
+    }
+
+    fn update<'a>(
+        &'a self,
+        key: &usize,
+        new: usize,
+        _: &Self::Guard<'a>,
+    ) -> Option<(usize, Option<usize>)> {
+        unsafe {
+            (*self.map.get())
+                .entry(*key)
+                .and_modify(|v| *v = new)
+                .or_insert(new);
+        }
+        Some((*key, Some(*key)))
+    }
+
+    fn scan<'a>(
+        &'a self,
+        low_key: &usize,
+        high_key: &usize,
+        results: &mut [(usize, usize)],
+        _: &Self::Guard<'a>,
+    ) -> usize {
+        unsafe {
+            let map = &*self.map.get();
+            let range = map.range(low_key..=high_key);
+            let mut count = 0;
+            for (k, v) in range {
+                if count >= results.len() {
+                    break;
+                }
+                results[count] = (*k, *v);
+                count += 1;
+            }
+            count
+        }
+    }
 }
 
 impl DBIndex for Congee<usize, usize> {
@@ -211,6 +283,54 @@ impl DBIndex for flurry::HashMap<usize, usize> {
     }
 }
 
+impl DBIndex for dashmap::DashMap<usize, usize> {
+    type Guard<'a> = ();
+
+    fn pin(&self) -> Self::Guard<'_> {
+        ()
+    }
+
+    fn insert<'a>(&'a self, key: usize, v: usize, _: &Self::Guard<'a>) {
+        self.insert(key, v);
+    }
+
+    fn get<'a>(&'a self, key: &usize, _: &Self::Guard<'a>) -> Option<usize> {
+        self.get(key).map(|v| *v)
+    }
+
+    fn update<'a>(
+        &'a self,
+        key: &usize,
+        new: usize,
+        _: &Self::Guard<'a>,
+    ) -> Option<(usize, Option<usize>)> {
+        self.alter(key, |_, _| new);
+        Some((*key, Some(*key)))
+    }
+
+    fn scan<'a>(
+        &'a self,
+        low_key: &usize,
+        high_key: &usize,
+        results: &mut [(usize, usize)],
+        _: &Self::Guard<'a>,
+    ) -> usize {
+        let mut count = 0;
+        for entry in self.iter() {
+            let key = *entry.key();
+            if key >= *low_key && key < *high_key {
+                if count < results.len() {
+                    results[count] = (key, *entry.value());
+                    count += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        count
+    }
+}
+
 impl<Index: DBIndex> ShumaiBench for TestBench<Index> {
     type Config = Basic;
     type Result = usize;
@@ -280,6 +400,22 @@ fn main() {
 
     for c in config.iter() {
         match c.index_type {
+            IndexType::BTree => {
+                let mut test_bench = TestBench {
+                    index: BTreeMapWrapper::new(),
+                    initial_cnt: 50_000_000,
+                };
+                let result = shumai::run(&mut test_bench, c, repeat);
+                result.write_json().unwrap();
+            }
+            IndexType::Dash => {
+                let mut test_bench = TestBench {
+                    index: dashmap::DashMap::new(),
+                    initial_cnt: 50_000_000,
+                };
+                let result = shumai::run(&mut test_bench, c, repeat);
+                result.write_json().unwrap();
+            }
             IndexType::Flurry => {
                 let mut test_bench = TestBench {
                     index: flurry::HashMap::new(),
