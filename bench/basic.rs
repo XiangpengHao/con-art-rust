@@ -315,19 +315,7 @@ impl DBIndex for dashmap::DashMap<usize, usize> {
         results: &mut [(usize, usize)],
         _: &Self::Guard<'a>,
     ) -> usize {
-        let mut count = 0;
-        for entry in self.iter() {
-            let key = *entry.key();
-            if key >= *low_key && key < *high_key {
-                if count < results.len() {
-                    results[count] = (key, *entry.value());
-                    count += 1;
-                } else {
-                    break;
-                }
-            }
-        }
-        count
+        unimplemented!("DashMap can't scan")
     }
 }
 
