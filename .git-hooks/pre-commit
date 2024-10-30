@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# Run cargo fmt and check if there are any changes
+cargo fmt --all -- --check
+if [ $? -ne 0 ]; then
+    echo "❌ Formatting check failed. Please run 'cargo fmt' to format your code."
+    exit 1
+fi
+
+echo "✅ Formatting check passed."
+exit 0
