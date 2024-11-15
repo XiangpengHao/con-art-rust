@@ -91,6 +91,7 @@ impl Node for Node256 {
         }
     }
 
+    #[inline(always)]
     fn base(&self) -> &BaseNode {
         &self.base
     }

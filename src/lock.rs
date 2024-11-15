@@ -91,9 +91,6 @@ impl<'a> ReadGuard<'a> {
             .type_version_lock_obsolete
             .load(Ordering::Acquire);
 
-        #[cfg(test)]
-        crate::utils::fail_point(ArtError::VersionNotMatch)?;
-
         if v == self.version {
             Ok(v)
         } else {

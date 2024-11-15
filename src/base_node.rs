@@ -241,9 +241,6 @@ impl BaseNode {
     pub(crate) fn read_lock(&self) -> Result<ReadGuard, ArtError> {
         let version = self.type_version_lock_obsolete.load(Ordering::Acquire);
 
-        // #[cfg(test)]
-        // crate::utils::fail_point(ArtError::Locked(version))?;
-
         if Self::is_locked(version) || Self::is_obsolete(version) {
             return Err(ArtError::Locked);
         }
@@ -255,12 +252,16 @@ impl BaseNode {
         (version & 0b10) == 0b10
     }
 
+    fn is_obsolete(version: usize) -> bool {
+        (version & 1) == 1
+    }
+
     pub(crate) fn get_count(&self) -> usize {
         self.meta.count as usize
     }
 
-    fn is_obsolete(version: usize) -> bool {
-        (version & 1) == 1
+    pub(crate) fn prefix_matches(&self, key: &[u8]) -> bool {
+        key.starts_with(self.prefix())
     }
 
     pub(crate) fn prefix(&self) -> &[u8] {
@@ -269,6 +270,10 @@ impl BaseNode {
                 .prefix
                 .get_unchecked(..self.meta.prefix_cnt as usize)
         }
+    }
+
+    pub(crate) fn prefix_len(&self) -> usize {
+        self.meta.prefix_cnt as usize
     }
 
     pub(crate) fn insert_grow<CurT: Node, BiggerT: Node, A: Allocator + Send + Clone + 'static>(

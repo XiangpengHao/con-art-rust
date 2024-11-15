@@ -64,8 +64,6 @@ impl<const K_LEN: usize, A: Allocator + Clone + Send> RawCongee<K_LEN, A> {
     #[inline]
     pub(crate) fn get(&self, key: &[u8; K_LEN], _guard: &Guard) -> Option<usize> {
         'outer: loop {
-            let mut level = 0;
-
             let mut node = if let Ok(v) = unsafe { &*self.root }.base().read_lock() {
                 v
             } else {
@@ -73,24 +71,26 @@ impl<const K_LEN: usize, A: Allocator + Clone + Send> RawCongee<K_LEN, A> {
             };
 
             loop {
-                level = Self::check_prefix(node.as_ref(), key, level)?;
+                if !node.as_ref().prefix_matches(key) {
+                    return None;
+                }
+
+                let level = node.as_ref().prefix_len();
 
                 let child_node = node
                     .as_ref()
-                    .get_child(unsafe { *key.get_unchecked(level as usize) });
+                    .get_child(unsafe { *key.get_unchecked(level) });
                 if node.check_version().is_err() {
                     continue 'outer;
                 }
 
                 let child_node = child_node?;
 
-                if level == (K_LEN - 1) as u32 {
+                if level == (K_LEN - 1) {
                     // the last level, we can return the value
                     let tid = child_node.as_tid();
                     return Some(tid);
                 }
-
-                level += 1;
 
                 node = if let Ok(n) = unsafe { &*child_node.as_ptr() }.read_lock() {
                     n
